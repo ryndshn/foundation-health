@@ -24,7 +24,7 @@
 	},
 	"private": true,
 	"scripts": {
-		"build": "vite build && tsc --project tsconfig.server.json",
+		"build": "vite build && tsc",
 		"dev": "vite",
 		"dev:server": "tsx watch src/server.ts",
 		"start": "node dist/server.js",
