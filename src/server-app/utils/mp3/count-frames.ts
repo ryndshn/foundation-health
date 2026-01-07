@@ -24,6 +24,10 @@ export async function countFrames(filePath: string): Promise<number> {
     // Skip ID3v2 tag if present
     position = await skipID3Tag(file, position, size);
 
+    // Skip Xing/Info VBR header frame if present
+    // (industry standard: exclude metadata frames from audio frame count)
+    position = await skipXingInfoFrame(file, position, size);
+
     // Count frames
     let frameCount = 0;
 
@@ -38,8 +42,7 @@ export async function countFrames(filePath: string): Promise<number> {
           (FRAME_LENGTH_MULTIPLIER * 1000 * frame.bitrate) / frame.sampleRate,
         ) + frame.padding;
 
-      // Ensure the entire frame exists and doesn't end exactly at file boundary
-      if (frameLength <= 0 || position + frameLength >= size) break;
+      if (frameLength <= 0 || position + frameLength > size) break;
 
       position += frameLength;
       frameCount++;
@@ -136,6 +139,51 @@ export async function readUInt32BE(
   const buffer = Buffer.alloc(4);
   const { bytesRead } = await file.read(buffer, 0, 4, position);
   return bytesRead === 4 ? buffer.readUInt32BE(0) : 0;
+}
+
+/**
+ * Skip Xing/Info VBR header frame if present
+ *
+ * The Xing/Info frame is a valid MPEG frame containing metadata rather than
+ * audio data. Industry standard is to exclude it from audio frame counts.
+ *
+ * Structure:
+ * - Appears as first frame after ID3 tags
+ * - Contains "Xing" (VBR) or "Info" (CBR) identifier at offset 36 (MPEG-1)
+ */
+async function skipXingInfoFrame(
+  file: Awaited<ReturnType<typeof open>>,
+  position: number,
+  fileSize: number,
+): Promise<number> {
+  // Need at least 4 bytes for header + 36 bytes offset + 4 bytes for "Xing"/"Info"
+  if (position + 44 > fileSize) return position;
+
+  const header = await readUInt32BE(file, position);
+  const frame = parseFrameHeader(header);
+
+  if (!frame) return position;
+
+  const frameLength =
+    Math.floor(
+      (FRAME_LENGTH_MULTIPLIER * 1000 * frame.bitrate) / frame.sampleRate,
+    ) + frame.padding;
+
+  if (frameLength <= 0 || position + frameLength > fileSize) return position;
+
+  // Read potential Xing/Info identifier at offset 36 from frame start
+  const identifierBuffer = Buffer.alloc(4);
+  const { bytesRead } = await file.read(identifierBuffer, 0, 4, position + 36);
+
+  if (bytesRead === 4) {
+    const identifier = identifierBuffer.toString("ascii");
+    if (identifier === "Xing" || identifier === "Info") {
+      // Skip this metadata frame
+      return position + frameLength;
+    }
+  }
+
+  return position;
 }
 
 /**
