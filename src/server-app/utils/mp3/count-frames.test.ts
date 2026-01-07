@@ -1,60 +1,101 @@
-import { open } from "node:fs/promises";
-import { describe, expect, it } from "vitest";
-import { countFrames } from "./count-frames";
+import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
+import {
+  countFrames,
+  parseFrameHeader,
+  readUInt32BE,
+  skipID3Tag,
+} from "./count-frames";
 
 describe("MP3 Frame Counter", () => {
-  it("should count frames in sample MP3", async () => {
-    const count = await countFrames("./src/server-app/__fixtures__/sample.mp3");
-    console.log("Frame count:", count);
-    expect(count).toBeGreaterThan(0);
+  const sampleMp3 = "./src/server-app/__fixtures__/sample.mp3";
+  const favorMp3 =
+    "./src/server-app/__fixtures__/Vindata, Skrillex, NSTASIA - Favor.mp3";
+  let tempDir: string;
+
+  afterAll(async () => {
+    if (tempDir) await rm(tempDir, { recursive: true, force: true });
   });
 
-  it("should read first bytes correctly", async () => {
-    const file = await open("./src/server-app/__fixtures__/sample.mp3", "r");
-    const buf = Buffer.alloc(50);
-    await file.read(buf, 0, 50, 0);
-    await file.close();
+  const buildHeader = (
+    overrides: {
+      sync?: number;
+      version?: number;
+      layer?: number;
+      protection?: number;
+      bitrateIndex?: number;
+      sampleRateIndex?: number;
+      padding?: number;
+    } = {},
+  ) => {
+    const {
+      sync = 0x7ff,
+      version = 0b11,
+      layer = 0b01,
+      protection = 0b1,
+      bitrateIndex = 0b1001,
+      sampleRateIndex = 0b00,
+      padding = 0b0,
+    } = overrides;
 
-    console.log("First 50 bytes:", buf.toString("hex"));
-    console.log("First 3 bytes (should be ID3):", buf.subarray(0, 3).toString());
-    console.log(
-      "ID3 size bytes:",
-      buf.subarray(6, 10).toString("hex"),
+    return (
+      (sync << 21) |
+      (version << 19) |
+      (layer << 17) |
+      (protection << 16) |
+      (bitrateIndex << 12) |
+      (sampleRateIndex << 10) |
+      (padding << 9)
     );
+  };
 
-    const tagSize =
-      ((buf[6] & 0x7f) << 21) |
-      ((buf[7] & 0x7f) << 14) |
-      ((buf[8] & 0x7f) << 7) |
-      (buf[9] & 0x7f);
-    console.log("Calculated tag size:", tagSize);
-    console.log("First frame should be at position:", 10 + tagSize);
+  it("counts frames in sample MP3 files", async () => {
+    // Reference values from ffprobe
+    expect(await countFrames(sampleMp3)).toBe(6089);
+    expect(await countFrames(favorMp3)).toBe(8533);
   });
 
-  it("should parse first frame header", async () => {
-    const file = await open("./src/server-app/__fixtures__/sample.mp3", "r");
-    const buf = Buffer.alloc(4);
-    await file.read(buf, 0, 4, 44); // Read at position 44
+  it("skips ID3 tags and parses valid frame headers", async () => {
+    const file = await open(sampleMp3, "r");
+    const { size } = await file.stat();
+    const position = await skipID3Tag(file, 0, size);
+    const header = await readUInt32BE(file, position);
     await file.close();
 
-    const header = buf.readUInt32BE(0);
-    console.log("Header hex:", buf.toString("hex"));
-    console.log("Header uint32:", header.toString(16));
-    console.log("Header binary:", header.toString(2).padStart(32, "0"));
+    expect(parseFrameHeader(header)).not.toBeNull();
+  });
 
-    // Parse manually
-    const sync = (header & 0xffe00000) >>> 21;
-    const version = (header >>> 19) & 0b11;
-    const layer = (header >>> 17) & 0b11;
-    const bitrateIndex = (header >>> 12) & 0b1111;
-    const sampleRateIndex = (header >>> 10) & 0b11;
-    const padding = (header >>> 9) & 0b1;
+  it("parses valid headers and rejects invalid ones per MPEG-1 Layer III spec", () => {
+    expect(parseFrameHeader(buildHeader())).toEqual({
+      bitrate: 128,
+      sampleRate: 44100,
+      padding: 0,
+    });
 
-    console.log("Sync:", sync.toString(16), "(should be 7FF)");
-    console.log("Version:", version, "(should be 3 for MPEG-1)");
-    console.log("Layer:", layer, "(should be 1 for Layer 3)");
-    console.log("Bitrate index:", bitrateIndex);
-    console.log("Sample rate index:", sampleRateIndex);
-    console.log("Padding:", padding);
+    // Test spec violations: sync, version, layer, bitrate, sample rate
+    [
+      { sync: 0x7fe },
+      { version: 0b10 },
+      { layer: 0b10 },
+      { bitrateIndex: 0b0000 },
+      { bitrateIndex: 0b1111 },
+      { sampleRateIndex: 0b11 },
+    ].forEach((override) => {
+      expect(parseFrameHeader(buildHeader(override))).toBeNull();
+    });
+  });
+
+  it("returns 0 when file has fewer than 4 bytes", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "count-frames-"));
+    const filePath = join(tempDir, "short.mp3");
+    await writeFile(filePath, Buffer.from([0x12, 0x34]));
+
+    const file = await open(filePath, "r");
+    const value = await readUInt32BE(file, 0);
+    await file.close();
+
+    expect(value).toBe(0);
   });
 });

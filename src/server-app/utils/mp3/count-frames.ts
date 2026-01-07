@@ -38,10 +38,11 @@ export async function countFrames(filePath: string): Promise<number> {
           (FRAME_LENGTH_MULTIPLIER * 1000 * frame.bitrate) / frame.sampleRate,
         ) + frame.padding;
 
-      if (frameLength <= 0 || position + frameLength > size) break;
+      // Ensure the entire frame exists and doesn't end exactly at file boundary
+      if (frameLength <= 0 || position + frameLength >= size) break;
 
-      frameCount++;
       position += frameLength;
+      frameCount++;
     }
 
     return frameCount;
@@ -65,7 +66,7 @@ export async function countFrames(filePath: string): Promise<number> {
  * G (1 bit):   Padding
  * H-M:         Other flags (not needed for frame counting)
  */
-function parseFrameHeader(
+export function parseFrameHeader(
   header: number,
 ): { bitrate: number; sampleRate: number; padding: number } | null {
   /**
@@ -128,7 +129,7 @@ function parseFrameHeader(
 /**
  * Read a 32-bit unsigned integer (big-endian) from file
  */
-async function readUInt32BE(
+export async function readUInt32BE(
   file: Awaited<ReturnType<typeof open>>,
   position: number,
 ): Promise<number> {
@@ -148,7 +149,7 @@ async function readUInt32BE(
  *  5    : Flags
  *  6–9  : Tag size (synchsafe 28-bit integer)
  */
-async function skipID3Tag(
+export async function skipID3Tag(
   file: Awaited<ReturnType<typeof open>>,
   position: number,
   fileSize: number,
