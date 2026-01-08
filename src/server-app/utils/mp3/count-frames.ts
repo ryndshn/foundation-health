@@ -10,13 +10,20 @@
  */
 
 import { open } from "node:fs/promises";
-import { BITRATES, FRAME_LENGTH_MULTIPLIER, SAMPLE_RATES } from "./constants";
+import {
+  BITRATES,
+  FRAME_LENGTH_MULTIPLIER,
+  SAMPLE_RATES,
+  ID3_HEADER_SIZE,
+  ID3_TAG_IDENTIFIER,
+} from "./constants";
 
 export async function countFrames(filePath: string): Promise<number> {
   const file = await open(filePath, "r");
 
   try {
     const { size } = await file.stat();
+    // TODO: Why?
     if (size < 4) return 0;
 
     let position = 0;
@@ -35,7 +42,9 @@ export async function countFrames(filePath: string): Promise<number> {
       const header = await readUInt32BE(file, position);
       const frame = parseFrameHeader(header);
 
-      if (!frame) break; // Invalid frame, stop counting
+      if (!frame) {
+        throw new Error(`Invalid MP3 frame header at position ${position}`);
+      }
 
       const frameLength =
         Math.floor(
@@ -53,6 +62,20 @@ export async function countFrames(filePath: string): Promise<number> {
     await file.close();
   }
 }
+
+/**
+ *  Extract specific bits from a 32-bit header
+ *   Starting bit position counting from the right
+ */
+const getBitsFromHeader = (header: number, start: number, len: number) => {
+  const end = start - len + 1;
+
+  const shifted = header >>> end;
+
+  // Create a mask of the appropriate length
+  const mask = (1 << len) - 1;
+  return shifted & mask;
+};
 
 /**
  * Parse MP3 frame header (4 bytes / 32 bits)
@@ -78,21 +101,21 @@ export function parseFrameHeader(
    * - 0x7ff = 2047 = 0b11111111111 (11 ones)
    * - Valid MPEG frame sync must be all 1s
    */
-  const sync = (header >>> 21) & 0x7ff;
+  const sync = getBitsFromHeader(header, 31, 11);
   if (sync !== 0x7ff) return null;
 
   /**
    * MPEG Audio version ID (bits 20–19, 2 bits)
    * - 0b11 (3) indicates MPEG-1
    */
-  const version = (header >>> 19) & 0b11;
+  const version = getBitsFromHeader(header, 20, 2);
   if (version !== 0b11) return null;
 
   /**
    * Layer description (bits 18–17, 2 bits)
    * - 0b01 (1) indicates Layer III
    */
-  const layer = (header >>> 17) & 0b11;
+  const layer = getBitsFromHeader(header, 18, 2);
   if (layer !== 0b01) return null;
 
   /**
@@ -100,7 +123,7 @@ export function parseFrameHeader(
    * - 0b0000 = free format (invalid)
    * - 0b1111 = bad value (invalid)
    */
-  const bitrateIndex = (header >>> 12) & 0b1111;
+  const bitrateIndex = getBitsFromHeader(header, 15, 4);
   if (bitrateIndex === 0b0000 || bitrateIndex === 0b1111) {
     return null;
   }
@@ -109,7 +132,7 @@ export function parseFrameHeader(
    * Sample rate index (bits 11–10, 2 bits)
    * - 0b11 is reserved / invalid
    */
-  const sampleRateIndex = (header >>> 10) & 0b11;
+  const sampleRateIndex = getBitsFromHeader(header, 11, 2);
   if (sampleRateIndex === 0b11) {
     return null;
   }
@@ -118,7 +141,7 @@ export function parseFrameHeader(
    * Padding flag (bit 9, 1 bit)
    * - 1 means frame includes an extra padding byte
    */
-  const padding = (header >>> 9) & 0b1;
+  const padding = getBitsFromHeader(header, 9, 1);
 
   // Lookup actual values from tables
   const bitrate = BITRATES[bitrateIndex];
@@ -162,7 +185,11 @@ async function skipXingInfoFrame(
   const header = await readUInt32BE(file, position);
   const frame = parseFrameHeader(header);
 
-  if (!frame) return position;
+  if (!frame) {
+    throw new Error(
+      "Invalid MP3 frame header while checking for Xing/Info frame",
+    );
+  }
 
   const frameLength =
     Math.floor(
@@ -206,33 +233,28 @@ export async function skipID3Tag(
    * We must read the full 10-byte ID3 header to decide anything.
    * If fewer than 10 bytes remain in the file, an ID3 tag cannot exist.
    */
-  if (position + 10 > fileSize) return position;
+  if (position + ID3_HEADER_SIZE > fileSize) return position;
 
   /**
    * Allocate a 10-byte buffer to hold the ID3v2 header.
    * Files are read in BYTES (not bits).
    */
-  const buffer = Buffer.alloc(10);
+  const buffer = Buffer.alloc(ID3_HEADER_SIZE);
 
   /**
    * Read exactly 10 bytes from the file at the current position.
    * These bytes correspond to the fixed-size ID3v2 header.
    */
-  const { bytesRead } = await file.read(buffer, 0, 10, position);
-  if (bytesRead < 10) return position;
+  const { bytesRead } = await file.read(buffer, 0, ID3_HEADER_SIZE, position);
+  if (bytesRead < ID3_HEADER_SIZE) return position;
 
   /**
    * Bytes 0–2 must be ASCII "ID3" for an ID3v2 tag.
-   *
-   * ASCII values:
-   *  'I' = 0x49
-   *  'D' = 0x44
-   *  '3' = 0x33
-   *
-   * If these don’t match, this file does not start with an ID3 tag.
    */
-  if (buffer[0] !== 0x49 || buffer[1] !== 0x44 || buffer[2] !== 0x33) {
-    return position; // No ID3 tag present
+  for (let i = 0; i < ID3_TAG_IDENTIFIER.length; i++) {
+    if (buffer[i] !== ID3_TAG_IDENTIFIER.charCodeAt(i)) {
+      return position; // No ID3 tag present
+    }
   }
 
   /**
@@ -249,15 +271,20 @@ export async function skipID3Tag(
    *   buffer[8] → bits 13–7
    *   buffer[9] → bits 6–0
    *
-   * & 0x7f     → keep only the lower 7 bits
-   * << N       → move those bits into their final position
-   * |          → combine all parts into one integer
+   * Example:
+   *  10000001
+   *  10001111
+   *  10011001
+   *  11110000
+   *  0000001 0001111 0011001 1110000
    */
-  const tagSize =
-    ((buffer[6] & 0x7f) << 21) |
-    ((buffer[7] & 0x7f) << 14) |
-    ((buffer[8] & 0x7f) << 7) |
-    (buffer[9] & 0x7f);
+
+  const synchsafeMask = 0x7f;
+  let tagSize = 0;
+  for (let i = 6; i < ID3_HEADER_SIZE; i++) {
+    const masked = buffer[i] & synchsafeMask;
+    tagSize = (tagSize << 7) | masked;
+  }
 
   /**
    * The full ID3 tag length is:
@@ -266,10 +293,10 @@ export async function skipID3Tag(
    * We skip past the entire tag so the next read starts
    * at the first MP3 frame header.
    */
-  const nextPosition = position + 10 + tagSize;
+  const nextPosition = position + ID3_HEADER_SIZE + tagSize;
 
   /**
    * Ensure we never return a position past EOF.
    */
-  return nextPosition <= fileSize ? nextPosition : fileSize;
+  return Math.min(nextPosition, fileSize);
 }

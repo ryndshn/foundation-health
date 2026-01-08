@@ -5,11 +5,14 @@ import { streamUploadToDisk } from "./utils/upload";
 
 const app = new Hono();
 
-app.get("/api", (c) => c.json({ name: "Node.js" }));
+app.get("/health", (c) => c.body("server is running 👍"));
 
 app.post("/file-upload", async (c) => {
   try {
+    // NOTE: it seems that it is possible to stream and process the file
+    // without storing it on disk first, but for simplicity we'll store it temporarily
     const filepath = await streamUploadToDisk(c.req.raw);
+
     const frameCount = await countFrames(filepath);
     await unlink(filepath);
 

@@ -1,3 +1,4 @@
+import type { AddressInfo } from "node:net";
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import request from "supertest";
@@ -6,15 +7,16 @@ import app from "./index";
 
 describe("File Upload Endpoint", () => {
   const server = serve({ fetch: app.fetch, port: 0 });
-  const baseURL = `http://localhost:${(server.address() as any).port}`;
+  const address = server.address() as AddressInfo;
+  const baseURL = `http://localhost:${address.port}`;
 
-  it("should accept file upload", async () => {
+  it("should error on bad file", async () => {
     const response = await request(baseURL)
       .post("/file-upload")
       .attach("file", Buffer.from("fake mp3 data"), "test.mp3");
 
-    expect(response.status).toBe(200);
-    expect(response.body).toHaveProperty("frameCount");
+    expect(response.status).toBe(400);
+    expect(response.body).toHaveProperty("error");
   });
 
   it("should return error when no file uploaded", async () => {
