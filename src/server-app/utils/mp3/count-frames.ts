@@ -13,9 +13,14 @@ import { open } from "node:fs/promises";
 import {
   BITRATES,
   FRAME_LENGTH_MULTIPLIER,
-  SAMPLE_RATES,
+  FRAME_SYNC,
   ID3_HEADER_SIZE,
   ID3_TAG_IDENTIFIER,
+  LAYER_III,
+  SAMPLE_RATES,
+  SYNCHSAFE_MASK,
+  UINT32_SIZE,
+  VERSION_MPEG_1,
 } from "./constants";
 
 export async function countFrames(filePath: string): Promise<number> {
@@ -23,8 +28,7 @@ export async function countFrames(filePath: string): Promise<number> {
 
   try {
     const { size } = await file.stat();
-    // TODO: Why?
-    if (size < 4) return 0;
+    if (size < UINT32_SIZE) return 0;
 
     let position = 0;
 
@@ -38,7 +42,7 @@ export async function countFrames(filePath: string): Promise<number> {
     // Count frames
     let frameCount = 0;
 
-    while (position + 4 <= size) {
+    while (position + UINT32_SIZE <= size) {
       const header = await readUInt32BE(file, position);
       const frame = parseFrameHeader(header);
 
@@ -97,57 +101,43 @@ export function parseFrameHeader(
 ): { bitrate: number; sampleRate: number; padding: number } | null {
   /**
    * Frame sync (bits 31–21, 11 bits)
-   * - >>> 21 moves the top 11 bits to the bottom
-   * - 0x7ff = 2047 = 0b11111111111 (11 ones)
-   * - Valid MPEG frame sync must be all 1s
    */
   const sync = getBitsFromHeader(header, 31, 11);
-  if (sync !== 0x7ff) return null;
+  if (sync !== FRAME_SYNC) return null;
 
   /**
    * MPEG Audio version ID (bits 20–19, 2 bits)
-   * - 0b11 (3) indicates MPEG-1
    */
   const version = getBitsFromHeader(header, 20, 2);
-  if (version !== 0b11) return null;
+  if (version !== VERSION_MPEG_1) return null;
 
   /**
    * Layer description (bits 18–17, 2 bits)
-   * - 0b01 (1) indicates Layer III
    */
   const layer = getBitsFromHeader(header, 18, 2);
-  if (layer !== 0b01) return null;
+  if (layer !== LAYER_III) return null;
 
   /**
    * Bitrate index (bits 15–12, 4 bits)
-   * - 0b0000 = free format (invalid)
-   * - 0b1111 = bad value (invalid)
    */
   const bitrateIndex = getBitsFromHeader(header, 15, 4);
-  if (bitrateIndex === 0b0000 || bitrateIndex === 0b1111) {
-    return null;
-  }
 
   /**
    * Sample rate index (bits 11–10, 2 bits)
-   * - 0b11 is reserved / invalid
    */
   const sampleRateIndex = getBitsFromHeader(header, 11, 2);
-  if (sampleRateIndex === 0b11) {
-    return null;
-  }
-
-  /**
-   * Padding flag (bit 9, 1 bit)
-   * - 1 means frame includes an extra padding byte
-   */
-  const padding = getBitsFromHeader(header, 9, 1);
 
   // Lookup actual values from tables
   const bitrate = BITRATES[bitrateIndex];
   const sampleRate = SAMPLE_RATES[sampleRateIndex];
 
   if (!bitrate || !sampleRate) return null;
+
+  /**
+   * Padding flag (bit 9, 1 bit)
+   * - 1 means frame includes an extra padding byte
+   */
+  const padding = getBitsFromHeader(header, 9, 1);
 
   return { bitrate, sampleRate, padding };
 }
@@ -159,9 +149,9 @@ export async function readUInt32BE(
   file: Awaited<ReturnType<typeof open>>,
   position: number,
 ): Promise<number> {
-  const buffer = Buffer.alloc(4);
-  const { bytesRead } = await file.read(buffer, 0, 4, position);
-  return bytesRead === 4 ? buffer.readUInt32BE(0) : 0;
+  const buffer = Buffer.alloc(UINT32_SIZE);
+  const { bytesRead } = await file.read(buffer, 0, UINT32_SIZE, position);
+  return bytesRead === UINT32_SIZE ? buffer.readUInt32BE(0) : 0;
 }
 
 /**
@@ -272,17 +262,16 @@ export async function skipID3Tag(
    *   buffer[9] → bits 6–0
    *
    * Example:
-   *  10000001
-   *  10001111
-   *  10011001
-   *  11110000
-   *  0000001 0001111 0011001 1110000
+   *   buffer[6] = 10000001
+   *   buffer[7] = 10001111
+   *   buffer[8] = 10011001
+   *   buffer[9] = 11110000
+   *   tagSize = 0000001 0001111 0011001 1110000
    */
 
-  const synchsafeMask = 0x7f;
   let tagSize = 0;
   for (let i = 6; i < ID3_HEADER_SIZE; i++) {
-    const masked = buffer[i] & synchsafeMask;
+    const masked = buffer[i] & SYNCHSAFE_MASK;
     tagSize = (tagSize << 7) | masked;
   }
 
