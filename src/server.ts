@@ -1,9 +1,5 @@
 import { serve } from "@hono/node-server";
-import { serveStatic } from "@hono/node-server/serve-static";
 import app from "./server-app/index";
-
-// Serve static files from dist/client (React SPA) - this acts as a fallback
-app.use("/*", serveStatic({ root: "./dist/client" }));
 
 const port = Number(process.env.PORT) || 3000;
 
