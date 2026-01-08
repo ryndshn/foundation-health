@@ -37,10 +37,6 @@ describe("File Upload Endpoint", () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toHaveProperty("frameCount");
-
-    // TODO: Verify exact frame count once implementation is complete
-    // Run: mediainfo --fullscan ./src/server-app/__fixtures__/sample.mp3
-    // Expected frame count: TBD
-    expect(response.body.frameCount).toBeGreaterThan(0);
+    expect(response.body.frameCount).toBe(6089);
   });
 });
