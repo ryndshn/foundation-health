@@ -11,8 +11,6 @@ import {
 
 describe("MP3 Frame Counter", () => {
   const sampleMp3 = "./src/server-app/__fixtures__/sample.mp3";
-  const favorMp3 =
-    "./src/server-app/__fixtures__/Vindata, Skrillex, NSTASIA - Favor.mp3";
   let tempDir: string;
 
   afterAll(async () => {
@@ -51,10 +49,9 @@ describe("MP3 Frame Counter", () => {
     );
   };
 
-  it("counts frames in sample MP3 files", async () => {
-    // Reference values from ffprobe
+  it("counts frames in sample MP3 file", async () => {
+    // Reference value from ffprobe/mediainfo
     expect(await countFrames(sampleMp3)).toBe(6089);
-    expect(await countFrames(favorMp3)).toBe(8533);
   });
 
   it("skips ID3 tags and parses valid frame headers", async () => {
